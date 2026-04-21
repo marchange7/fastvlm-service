@@ -9,6 +9,8 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # MLX-VLM for Apple Silicon (M1/M2/M3/M4)
 from mlx_vlm import load, generate
@@ -16,6 +18,22 @@ from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.utils import load_config
 
 app = FastAPI(title="FastVLM Service", version="0.1.0")
+
+
+@app.middleware("http")
+async def fastvlm_bearer_guard(request: Request, call_next):
+    """When FASTVLM_API_TOKEN is set, require Authorization: Bearer <token> on inference routes."""
+    token = os.environ.get("FASTVLM_API_TOKEN", "").strip()
+    if not token:
+        return await call_next(request)
+    path = request.url.path
+    if path in ("/health", "/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+    auth = request.headers.get("authorization")
+    if auth != f"Bearer {token}":
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
 
 # MLX-compatible VLM models (Qwen2-VL runs natively on Apple Silicon)
 MLX_MODEL_05B = os.environ.get("FASTVLM_MODEL_05B", "mlx-community/Qwen2-VL-2B-Instruct-4bit")
@@ -132,3 +150,11 @@ def ollama_generate(req: OllamaGenerateRequest):
         caption = "No image provided."
 
     return {"model": "fastvlm", "response": caption, "done": True}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.environ.get("FASTVLM_BIND_HOST", "127.0.0.1")
+    port = int(os.environ.get("FASTVLM_PORT", "8091"))
+    uvicorn.run(app, host=host, port=port)
